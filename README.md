@@ -19,10 +19,15 @@ The script handles errors well. If no secret is given, a hash comparison fails, 
   - If not, run `sudo chmod -R www-data:www-data .git`
 - Add the deploy key as well as the `knwon_hosts` file of your repository to `www-data`'s home directory, defaulting to `/var/www/.ssh`
 
+**Important Note**
+
+If the user for deploy execution is `www-data`, make sure to run `sudo -u www-data git pull` once. Otherwise the webhook will always fail, since the host has not been added to the authorized keys list.
+
 ### Options
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `secret` | *(empty)* | Secret (or token) which the webhook is secured with.
 | `directory` | `/var/www/example.com` | Default git repository location.
 | `work_dir` | `false` | Your project's work directory. If git and work directories aren't seperated, set it to `false`.
 | `log` | `deploy.log` | Relative or absolute path where to save the log file. If set to `false` no log file will be saved.

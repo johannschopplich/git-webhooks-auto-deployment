@@ -6,7 +6,7 @@
  * Based on: https://github.com/katzueno/git-Webhooks-Auto-Deploy-PHP-Script
  *
  * @author  Johann Schopplich <mail@johannschopplich.com>
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 /**
@@ -17,77 +17,24 @@
 date_default_timezone_set('Europe/Berlin');
 
 /**
- * The secret key (respectively token) for securing the script.
- * Example usage: https://example.com/deployments.php?secret=WEBHOOKSECRET
- * @var string
- */
-$secret_key = 'WEBHOOKSECRET';
-
-/**
- * The Options
- * Only `directory` is required.
+ * The Options.
+ * Only `secret` and `directory` are required.
  * @var array
  */
-$options = array(
-    'directory'     => '/var/www/example.com', // Git repo location
-    'work_dir'      => false, // If git and work directories aren't seperated, leave it empty or false
-    'log'           => 'deploy.log', // Relative or absolute path; set to `false` for no logs
+$options = [
+    'secret'        => 'WEBHOOKSECRET', // @link https://example.com/deployments.php?secret=WEBHOOKSECRET
+    'directory'     => '/var/www/example.com',
+    'work_dir'      => false,
+    'log'           => 'deploy.log',
     'branch'        => 'master',
     'remote'        => 'origin',
     'date_format'   => 'Y-m-d H:i:sP',
     'syncSubmodule' => false,
-    'reset'         => false, // If set to true, runs `git reset --hard` every time you deploy
+    'reset'         => false,
     'git_bin_path'  => '/usr/bin/git',
-);
+];
 
 /**
- * Parse delivered hashed or plain signature and bail if verification fails.
- */
-// GitHub and Gitea forward a hashed secret
-$hashed_signature = $_SERVER['HTTP_X_HUB_SIGNATURE'] ?? $_SERVER['HTTP_X_GITEA_SIGNATURE'] ?? null;
-// GitLab just sends the plain token
-$generic_signature = $_SERVER['HTTP_X_GITLAB_TOKEN'] ?? $_GET['secret'] ?? null;
-
-if (empty($hashed_signature) && empty($generic_signature)) {
-    http_response_code(401);
-    exit(json_encode(['error' => 'No secret given.'], JSON_PRETTY_PRINT));
-}
-
-// Check content type of POST requests
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $_SERVER['CONTENT_TYPE'] !== 'application/json') {
-    http_response_code(401);
-    exit(json_encode(['error' => 'Content type doesn\' match `application/json`.'], JSON_PRETTY_PRINT));
-}
-
-if (!empty($hashed_signature)) {
-    // GitHub prepends the applied hashing algorithm (`sha1`) in its signature
-    // Gitea doesn't hint its hashing algorithm, but implies `sha256`
-    if (isset($_SERVER['HTTP_X_HUB_SIGNATURE'])) {
-        // Split signature into algorithm and hash
-        list($algo, $hash) = explode('=', $hashed_signature, 2);
-    } elseif (isset($_SERVER['HTTP_X_GITEA_SIGNATURE'])) {
-        $algo = 'sha256';
-        $hash = $hashed_signature;
-    }
-
-    // Get payload
-    $payload = file_get_contents('php://input');
-
-    // Calculate hash based on payload and the secret
-    $payload_hash = hash_hmac($algo, $payload, $secret_key);
-
-    // Check if hashes are equivalent
-    if (!hash_equals($hash, $payload_hash)) {
-        http_response_code(403);
-        exit(json_encode(['error' => 'Hook secret doesn\'t match.'], JSON_PRETTY_PRINT));
-    }
-} elseif (!empty($generic_signature) && $generic_signature !== $secret_key) {
-    http_response_code(403);
-    exit(json_encode(['error' => 'Hook secret doesn\'t match.'], JSON_PRETTY_PRINT));
-}
-
-/**
- * Main entry point.
  * Create a new `Deploy` class, execute git events and any defined post-deploy instructions.
  */
 $deploy = new Deploy($options);
@@ -95,10 +42,8 @@ $deploy = new Deploy($options);
 //     exec('rm -rf ' . $options['directory'] . '/storage/cache/example.com');
 //     $deploy->log('Flushing Kirby cache…');
 // };
+$deploy->validateSignature();
 $deploy->execute();
-
-header('Content-type: application/json');
-echo json_encode(['status' => 'ok', JSON_PRETTY_PRINT]);
 
 /**
  * The core deploy class.
@@ -136,6 +81,13 @@ class Deploy {
     private $_git_bin_path = 'git';
 
     /**
+     * The secret key (or token) for securing the script.
+     *
+     * @var string
+     */
+    private $_secret;
+
+    /**
      * The directory where your git repository is located, can be
      * a relative or absolute path from this PHP script on server.
      *
@@ -160,18 +112,32 @@ class Deploy {
     private $_topull = false;
 
     /**
+     * The branch to work with.
+     *
+     * @var string
+     */
+    private $_branch = 'master';
+
+    /**
+     * The orgin to use.
+     *
+     * @var string
+     */
+    private $_remote = 'origin';
+
+    /**
      * Sets up defaults.
      *
      * @param array $option Information about the deployment
      */
-    public function __construct($options = array())
+    public function __construct($options = [])
     {
-        $available_options = array('directory', 'work_dir', 'log', 'date_format', 'branch', 'remote', 'syncSubmodule', 'reset', 'git_bin_path');
+        $available_options = ['secret', 'directory', 'work_dir', 'log', 'date_format', 'branch', 'remote', 'syncSubmodule', 'reset', 'git_bin_path'];
 
-        foreach ($options as $option => $value){
+        foreach ($options as $option => $value) {
             if (in_array($option, $available_options)) {
                 $this->{'_' . $option} = $value;
-                if (($option == 'directory') || ($option == 'work_dir' && $value)) {
+                if (($option === 'directory') || ($option === 'work_dir' && $value)) {
                     // Determine the directory path
                     $this->{'_' . $option} = realpath($value) . '/';
                 }
@@ -179,7 +145,7 @@ class Deploy {
         }
 
         $this->_topull = false;
-        if (empty($this->_work_dir) || ($this->_work_dir == $this->_directory)) {
+        if (empty($this->_work_dir) || ($this->_work_dir === $this->_directory)) {
             $this->_work_dir = $this->_directory;
             $this->_directory = $this->_directory . '.git';
             $this->_topull = true;
@@ -188,6 +154,9 @@ class Deploy {
         $this->log('Attempting deployment…');
         $this->log('Git Directory: ' . $this->_directory);
         $this->log('Work Directory: ' . $this->_work_dir);
+
+        // Set a default header for every response
+        header('Content-type: application/json');
     }
 
     /**
@@ -217,6 +186,57 @@ class Deploy {
     }
 
     /**
+     * Parse delivered hashed or plain signature and bail if verification fails.
+     */
+    public function validateSignature()
+    {
+        try {
+            // GitHub and Gitea forward a hashed secret
+            $hashed_signature = $_SERVER['HTTP_X_HUB_SIGNATURE'] ?? $_SERVER['HTTP_X_GITEA_SIGNATURE'] ?? null;
+            // GitLab just sends the plain token
+            $generic_signature = $_SERVER['HTTP_X_GITLAB_TOKEN'] ?? $_GET['secret'] ?? null;
+
+            if (empty($hashed_signature) && empty($generic_signature)) {
+                throw new Exception('No secret given.');
+            }
+
+            // Check content type of POST requests
+            if ($_SERVER['REQUEST_METHOD'] === 'POST' && $_SERVER['CONTENT_TYPE'] !== 'application/json') {
+                throw new Exception('Content type doesn\' match `application/json`.');
+            }
+
+            if (!empty($hashed_signature)) {
+                // GitHub prepends the applied hashing algorithm (`sha1`) in its signature
+                // Gitea doesn't hint its hashing algorithm, but implies `sha256`
+                if (isset($_SERVER['HTTP_X_HUB_SIGNATURE'])) {
+                    // Split signature into algorithm and hash
+                    list($algo, $hash) = explode('=', $hashed_signature, 2);
+                } elseif (isset($_SERVER['HTTP_X_GITEA_SIGNATURE'])) {
+                    $algo = 'sha256';
+                    $hash = $hashed_signature;
+                }
+
+                // Get payload
+                $payload = file_get_contents('php://input');
+
+                // Calculate hash based on payload and the secret
+                $payload_hash = hash_hmac($algo, $payload, $this->_secret);
+
+                // Check if hashes are equivalent
+                if (!hash_equals($hash, $payload_hash)) {
+                    throw new Exception('Hook secret doesn\'t match.');
+                }
+            } elseif (!empty($generic_signature) && $generic_signature !== $this->_secret) {
+                throw new Exception('Hook secret doesn\'t match.');
+            }
+        } catch (Exception $error) {
+            $this->log($error, 'ERROR');
+            http_response_code(401);
+            exit(json_encode(['error' => $error->getMessage()], JSON_PRETTY_PRINT));
+        }
+    }
+
+    /**
      * Executes the necessary commands to deploy the website.
      */
     public function execute()
@@ -235,7 +255,7 @@ class Deploy {
             }
 
             // Update the local repository
-            exec($this->_git_bin_path . ' --git-dir=' . $this->_directory . ' --work-tree=' . $this->_work_dir . ' fetch', $output, $return_var);
+            exec($this->_git_bin_path . ' --git-dir=' . $this->_directory . ' --work-tree=' . $this->_work_dir . ' fetch ' . $this->_remote . ' ' . $this->_branch, $output, $return_var);
             if ($return_var === 0) {
                 $this->log('Fetching changes… ' . implode(' ', $output));
             } else {
@@ -244,7 +264,7 @@ class Deploy {
 
             // Checking out to web directory
             if ($this->_topull) {
-                exec('cd ' . $this->_directory . ' && GIT_WORK_TREE=' . $this->_work_dir . ' ' . $this->_git_bin_path . ' pull 2>&1', $output, $return_var);
+                exec('cd ' . $this->_directory . ' && GIT_WORK_TREE=' . $this->_work_dir . ' ' . $this->_git_bin_path . ' pull ' . $this->_remote . ' ' . $this->_branch . ' 2>&1', $output, $return_var);
                 if ($return_var === 0) {
                     $this->log('Pulling changes to directory… ' . implode(' ', $output));
                 } else {
@@ -268,7 +288,7 @@ class Deploy {
                     sleep(2);
                 }
 
-                // Update the submodule
+                // Update the submodules
                 $output = '';
                 exec($this->_git_bin_path . ' --git-dir=' . $this->_directory . ' --work-tree=' . $this->_work_dir . ' submodule update --init --recursive --remote', $output);
                 if (is_array($output)) {
@@ -283,10 +303,11 @@ class Deploy {
             }
 
             $this->log('Deployment successful.');
-        } catch (Exception $e) {
-            $this->log($e, 'ERROR');
+            echo json_encode(['status' => 'ok', JSON_PRETTY_PRINT]);
+        } catch (Exception $error) {
+            $this->log($error, 'ERROR');
             http_response_code(500);
-            exit(json_encode(['error' => 'Exception in deploy script line ' . $e->getLine()], JSON_PRETTY_PRINT));
+            exit(json_encode(['error' => 'Exception in deploy script line ' . $error->getLine()], JSON_PRETTY_PRINT));
         }
     }
 }
