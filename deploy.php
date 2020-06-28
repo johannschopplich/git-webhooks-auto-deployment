@@ -2,10 +2,11 @@
 /**
  * Git Webhooks Auto Deployment
  *
- * Works with webhooks of common git services, including GitHub, GitLab and Gitea. Also runnable via direct URL.
+ * Works with webhooks of common git services, including GitHub, GitLab and Gitea.
+ * Also runnable via direct URL.
  * Based on: https://github.com/katzueno/git-Webhooks-Auto-Deploy-PHP-Script
  *
- * @author  Johann Schopplich <mail@johannschopplich.com>
+ * @author Johann Schopplich <pkg@johannschopplich.com>
  * @version 1.1.0
  */
 
